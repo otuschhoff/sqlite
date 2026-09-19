@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package vfs exposes a Go [fs.FS] to SQLite as a read-only VFS.
+// Package vfs provides SQLite virtual file systems.
 //
 // [New] registers the file system with SQLite and returns the name it was
 // registered under. Passing that name as the vfs DSN query parameter opens a
@@ -27,6 +27,9 @@
 // Registration is process-global, as SQLite's own VFS registry is. Each [New]
 // registers a separate VFS under a fresh name, and [FS.Close] unregisters it
 // again.
+//
+// [NewEncrypted] wraps SQLite's native VFS with transparent encryption for a
+// writable database and its journal, WAL, and temporary files.
 package vfs
 
 import (
