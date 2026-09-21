@@ -13,9 +13,10 @@ The hand-written Go on top of that transpiled core implements the `database/sql/
 - `sqlite.go`, `conn.go`, `driver.go`, `stmt.go`, `rows.go`, `tx.go`, `backup.go`, `error.go`, `result.go`, `convert.go` — hand-written `database/sql/driver` implementation calling into `lib/`.
 - `vtab.go`, `pre_update_hook.go`, `fcntl.go`, `mutex.go`, `ofd.go` — Go-facing extensions wired to SQLite hooks/trampolines (`ofd.go`: the process-wide opt-in switch to Linux OFD locks, backed by `modernc_ofd_locking()` in the transpiled library; the C side lives in `../libsqlite3/internal/sqlite_issue255.patch{,2}`).
 - `lib/` — transpiled SQLite 3.53.4. One `sqlite_<goos>_<goarch>.go` per supported triple plus build-tagged `sqlite_g_*.go` files holding declarations `modernc.org/undup` deduplicated across triples (so to check what code a target compiles, resolve its full GoFiles via `go list`, not by filename); `defs.go`, `hooks.go`, `hooks_linux_arm64.go`, `mutex.go`, plus `libsqlite3_freebsd.go`/`libsqlite3_windows.go` hold hand-written patches that augment the generated code. Import as `sqlite3 "modernc.org/sqlite/lib"`.
-- `vec/` — transpiled `sqlite-vec` v0.1.9, auto-registers via `sqlite3_auto_extension` in `patches.go` on package init. Activate by blank-importing: `_ "modernc.org/sqlite/vec"`. Covers the same 19 targets `lib/` does; `vec_test.go`'s `//go:build` constrains by GOOS only.
+- `vec/` — transpiled `sqlite-vec` v0.1.9, auto-registers via `sqlite3_auto_extension` in `patches.go` on package init. Activate by blank-importing: `_ "modernc.org/sqlite/vec"`. Covers the same 20 targets `lib/` does (20 is the count in `builder.json` and `make build_all_targets`; the 18 per-target files are fewer because `windows/amd64` and `windows/arm64` share `sqlite_windows.go`); `vec_test.go`'s `//go:build` constrains by GOOS only.
 - `vfs/` — exposes a Go `fs.FS` as a read-only SQLite VFS. `vfs.New(fsys)` returns a registered VFS name; open with `?vfs=<name>`. C side is transpiled per platform from `vfs/c/vfs.c` via the `vfs/Makefile`.
 - `vtab/` — Go-facing virtual-table API (no dependency on the transpiled C). `vtab.RegisterModule(db, name, module)` registers modules on **new connections only**; a nil `db` targets the driver registered as `sqlite`, a non-nil `db` the driver backing it (via `vtab.ModuleRegisterer`). The bridge to C lives in the top-level `vtab.go`. See `vtab/doc.go` for the contract (Updater/Renamer/Transactional optional interfaces, re-entrancy rules, ArgIndex/Omit semantics).
+- `licensegen/` (own module, build tag `none`, built with `go build -tags none .`) — generates `LICENSE-3RD-PARTY.md`, `SBOM.md`, `sbom.cdx.json` (CycloneDX 1.6) and `sbom.spdx.json` (SPDX 2.3) from `go list -m all`, the license files in the module cache, the notice files dependencies carry (`modernc.org/libc`'s `LICENSE-3RD-PARTY.md`, which is how musl reaches us), and the vendored C. Classifies every component as linked / test-only / module-graph-only. Deterministic: no timestamps anywhere, SPDX's required `created` pinned to the epoch and its `documentNamespace` derived from the document's own content, so regenerating an unchanged tree is byte-identical and `./licgen -check` is meaningful. Both JSON documents validate against the published CycloneDX 1.6 and SPDX 2.3 schemas. `sbom.go` holds the SBOM writers, `main.go` the inventory and the Markdown. Invoked by `make licenses`, and wired into the repository's **only** CI job: `.gitlab-ci.yml` runs `licgen -check` when `go.mod`, `go.sum`, `licensegen/`, `lib/sqlite.go`, `vec/vec.go` or any of the four documents change. Nothing else runs in GitLab CI -- tests and cross-builds live on the builder farm. The `LICENSE` name prefix is load-bearing: `go mod vendor` matches metadata files by case-sensitive prefix, so `3RD_PARTY_LICENSES.md` would never reach downstream `vendor/` trees -- the same trap as the v1.57.0 `SQLITE-LICENSE` rename. Downloads into a scratch module so the repo's `go.sum` is never touched, and forces `GOWORK=off` so a `make work` workspace cannot leak into the document.
 - `vendor_libs/main.go` (build tag `none`) — regeneration tool. Reads transpiled `ccgo_<goos>_<goarch>.go` from sibling repos `../libsqlite3` and `../libsqlite_vec`, rewrites package names and imports, and writes `lib/sqlite_*.go` / `vec/vec_*.go`. Invoked by `make vendor`.
 - `examples/` — runnable samples: `example1`, `connector`, `vtab_basic`, `vtab_csv`, `vtab_match`, `vtab_regexp`.
 - `addport.go`, `issue198/`, `issue120.diff` — porting/regression scaffolding kept around for reference; not built.
@@ -27,6 +28,8 @@ make editor              # quick local check: go test -c + go build ./... + vend
 make test                # go test -v -timeout 24h (the full suite is long)
 make build_all_targets   # cross-build every supported GOOS/GOARCH
 make vendor              # regenerate lib/ and vec/ from sibling ../libsqlite3 + ../libsqlite_vec
+make sbom                # regenerate LICENSE-3RD-PARTY.md, SBOM.md, sbom.cdx.json, sbom.spdx.json
+make licenses            # alias for make sbom
 make all                 # editor + golint + staticcheck
 make work                # set up go.work pointing at sibling cc/ccgo/libc/libtcl8.6/libsqlite3/libz repos
 make clean               # removes log-*, *.test, *.out, go.work*
@@ -45,6 +48,25 @@ There is no `go generate` in this repo — `generator.go` lives in `../libsqlite
 Downstream `go.mod` files **must pin the exact `modernc.org/libc` version that this repo's `go.mod` pins** — the transpiled code in `lib/` is closely tied to that specific `libc`. This is documented in `doc.go` and tracked in [issue #177](https://gitlab.com/cznic/sqlite/-/issues/177). Bumping `libc` here without re-transpiling (or vice-versa) breaks consumers; that's why `v1.33.0`, `v1.34.3`, and `v1.42.0` are retracted in `go.mod`.
 
 When debugging into `libc`, use `make work` (or a manual `go work init && go work use . <path-to-libc>`) — `doc.go` has a worked example showing how to enable `Xwrite` dmesg logging in a local `libc` checkout.
+
+## Security policy
+
+`SECURITY.md` is the published policy; keep answers consistent with it. In short: reports go
+through GitHub private vulnerability reporting (enabled on the mirror), a **confidential**
+GitLab issue, or the project's GitLab Service Desk address (tickets on a public project are
+always confidential, verified in the UI 2026-09-20), never a public issue; acknowledgement is aimed at 7 days with **no fix deadline
+promised**; **only the latest release is supported** -- no maintenance branches; transpilation
+faults in `lib/`, `vec/` and `vfs/` are explicitly in scope and are this project's own bug
+class, while flaws in SQLite's C are reported here *and* upstream. On a confirmed report the
+fix ships in a new release, a GitHub advisory is published, **the advisory is filed with the
+Go vulnerability database** (`https://go.dev/s/vulndb-report-new`) so `govulncheck` sees it,
+and the CHANGELOG says what was wrong and who found it.
+
+`IRP.md` is the incident response plan and the procedural companion to `SECURITY.md`: triage,
+scoping by layer (hand-written Go / generated Go / SQLite's own C), the fix paths and the four
+rules that do not bend (never merge on the mirror, never bump `libc` alone, tag only on green
+builders, `make sbom` after dependency changes), disclosure, and Phase 5 -- **a published Go
+module version cannot be recalled**, so `retract` plus a new release is the only remedy.
 
 ## Repository / release workflow
 
